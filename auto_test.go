@@ -9,13 +9,15 @@ import (
 // Сценарии автовыбора: падение «вашего», возврат, «все мертвы» → напрямую, оживание,
 // ротация sid/sni подпиской (устаревшие параметры на роутере).
 func TestAutoFailover(t *testing.T) {
-	cfg = Config{AutoFails: 2, AutoRecover: 3, AutoFullPing: 1 << 62}
+	cfg = Config{AutoFails: 2, AutoRecover: 3, AutoFullPing: 0}
 	store = &Store{path: filepath.Join(t.TempDir(), "state.json"), st: defaultState()}
 	u := func(host, sid string) string {
 		return "vless://11111111-2222-3333-4444-555555555555@" + host + ":443?type=tcp&security=reality&pbk=k&sid=" + sid + "#" + host
 	}
 	store.st.Keys = []Key{{ID: "A", Name: "A", URL: u("a", "1")}, {ID: "B", Name: "B", URL: u("b", "1")}, {ID: "C", Name: "C", URL: u("c", "1")}}
 	store.st.ActiveKey, store.st.PreferredKey, store.st.LastApply = "A", "A", "x"
+	store.st.AppliedURL = store.st.Keys[0].URL
+	running := true // XKeen запущен
 
 	alive := map[string]int{}    // id -> мс
 	deadURL := map[string]bool{} // ссылки, которые «не работают»
@@ -28,13 +30,6 @@ func TestAutoFailover(t *testing.T) {
 				continue
 			}
 			id := k.ID
-			if id == "__applied" { // применённая ссылка: жива, если жив её сервер
-				for _, kk := range store.st.Keys {
-					if coreSig(kk.URL) == coreSig(k.URL) {
-						id = kk.ID
-					}
-				}
-			}
 			if v, ok := alive[id]; ok {
 				r[k.ID] = &v
 			}
@@ -43,12 +38,26 @@ func TestAutoFailover(t *testing.T) {
 	}
 	applyFn = func(st *State, stop bool) (string, error) {
 		if stop {
-			applied = append(applied, "STOP")
+			applied, running = append(applied, "STOP"), false
 		} else {
-			applied = append(applied, st.ActiveKey)
+			applied, running = append(applied, st.ActiveKey), true
 			st.AppliedURL = st.key(st.ActiveKey).URL
 		}
 		return "ok", nil
+	}
+	mainProbeReadyFn = func() bool { return running }
+	probeMainFn = func() *int { // рабочий xray: жив, если жив сервер применённой ссылки и ссылка не «протухла»
+		if !running || deadURL[store.st.AppliedURL] {
+			return nil
+		}
+		for _, k := range store.st.Keys {
+			if coreSig(k.URL) == coreSig(store.st.AppliedURL) {
+				if v, ok := alive[k.ID]; ok {
+					return &v
+				}
+			}
+		}
+		return nil
 	}
 	steps := []struct {
 		name       string
@@ -94,7 +103,8 @@ func TestAutoFailover(t *testing.T) {
 	store.st.Keys[0].URL = u("a", "2")
 	deadURL[old] = true
 	alive = map[string]int{"A": 80, "B": 300}
-	autoTick()
+	autoTick() // 1-й провал через рабочий xray
+	autoTick() // 2-й — переприменить свежие параметры
 	if store.st.AppliedURL != u("a", "2") || applied[len(applied)-1] != "A" {
 		t.Fatalf("ротация: applied=%s (%v)", store.st.AppliedURL, applied)
 	}
@@ -135,5 +145,28 @@ func TestParseVless(t *testing.T) {
 	}
 	if _, err := parseVless("vless://u@h:443?security=reality"); err == nil {
 		t.Fatal("reality без pbk должен отклоняться")
+	}
+}
+
+// В нормальном режиме (ваш сервер жив через рабочий xray) временный xray не запускается вовсе.
+func TestAutoHealthyNoTempXray(t *testing.T) {
+	cfg = Config{AutoFails: 2, AutoRecover: 3}
+	store = &Store{path: filepath.Join(t.TempDir(), "state.json"), st: defaultState()}
+	store.st.Keys = []Key{{ID: "A", Name: "A", URL: "vless://u@a:443?security=reality&pbk=k#A"}}
+	store.st.ActiveKey, store.st.PreferredKey, store.st.AppliedURL = "A", "A", store.st.Keys[0].URL
+	calls := 0
+	pingFn = func(keys []Key) map[string]*int { calls++; return map[string]*int{} }
+	applyFn = func(st *State, stop bool) (string, error) {
+		t.Fatal("лишнее применение")
+		return "", nil
+	}
+	mainProbeReadyFn = func() bool { return true }
+	ms := 60
+	probeMainFn = func() *int { return &ms }
+	for range 5 {
+		autoTick()
+	}
+	if calls != 0 {
+		t.Fatalf("временный xray запускался %d раз — должно быть 0", calls)
 	}
 }

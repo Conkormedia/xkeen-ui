@@ -47,7 +47,7 @@ func buildRouting(st *State) map[string]any {
 		return map[string]any{"type": "field", k: v, "outboundTag": tag}
 	}
 	// входы XKeen с портом 1191 (политика xkeen_full) — всегда через прокси
-	rules := []any{field("inboundTag", []string{"force-proxy-redirect", "force-proxy-tproxy"}, "proxy")}
+	rules := []any{field("inboundTag", []string{"force-proxy-redirect", "force-proxy-tproxy", probeTag}, "proxy")}
 	if st.BlockQUIC {
 		rules = append(rules, map[string]any{"type": "field", "network": "udp", "port": "443", "outboundTag": "block"})
 	}
@@ -139,6 +139,8 @@ var applyMu sync.Mutex // одновременно — только одно п�
 func applyToRouter(st *State, stop bool) (string, error) {
 	applyMu.Lock()
 	defer applyMu.Unlock()
+	xrayMu.Lock() // не запускать xray параллельно с замером пинга (память)
+	defer xrayMu.Unlock()
 	var log []string
 	if stop || !st.Enabled {
 		_, out := runCmd(120*time.Second, nil, cfg.XKeen, "-stop")
@@ -174,6 +176,9 @@ func applyToRouter(st *State, stop bool) (string, error) {
 	if err := writeAtomic(filepath.Join(dir, "05_routing.json"), rtB); err != nil {
 		return "", err
 	}
+	if err := writeAtomic(filepath.Join(dir, probeFile), probeInbound()); err != nil {
+		return "", err
+	}
 	code, out := runCmd(90*time.Second, []string{"XRAY_LOCATION_ASSET=" + cfg.XrayAssetDir}, cfg.Xray, "run", "-test", "-confdir", dir)
 	log = append(log, "$ xray -test\n"+tail(out, 1500))
 	if code != 0 {
@@ -186,6 +191,13 @@ func applyToRouter(st *State, stop bool) (string, error) {
 	}
 	_, out = runCmd(180*time.Second, nil, cfg.XKeen, "-restart")
 	log = append(log, "$ xkeen -restart\n"+out)
+	// XKeen запускает xray в фоне; ждём, пока рабочий xray поднимется, прежде чем отпускать xrayMu
+	for deadline := time.Now().Add(90 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		if xrayRunning() {
+			time.Sleep(5 * time.Second) // распаковка UPX и старт
+			break
+		}
+	}
 	st.AppliedURL = st.key(st.ActiveKey).URL
 	return strings.Join(log, "\n"), nil
 }
@@ -218,16 +230,21 @@ var (
 )
 
 // routerStatus — запущен ли xray и его версия (версию кэшируем: запуск xray на MIPS не бесплатный).
-func routerStatus() map[string]any {
+func xrayRunning() bool {
 	_, out := runCmd(5*time.Second, nil, "pidof", "xray")
-	running := false
 	for _, p := range strings.Fields(out) {
 		if strings.Trim(p, "0123456789") == "" && p != fmt.Sprint(pingPID.Load()) { // временный xray замера пинга не считаем
-			running = true
+			return true
 		}
 	}
+	return false
+}
+
+func routerStatus() map[string]any {
+	running := xrayRunning()
 	xrayVerMu.Lock()
-	if xrayVer == "" {
+	if xrayVer == "" && xrayMu.TryLock() { // версию узнаём, только когда никто не запускает xray
+		defer xrayMu.Unlock()
 		if c, out := runCmd(20*time.Second, nil, cfg.Xray, "version"); c == 0 {
 			xrayVer = strings.TrimSpace(strings.SplitN(out, "\n", 2)[0])
 		}
@@ -235,4 +252,35 @@ func routerStatus() map[string]any {
 	v := xrayVer
 	xrayVerMu.Unlock()
 	return map[string]any{"ok": true, "running": running, "xray": v}
+}
+
+// ---------- служебный вход для проверки активного сервера через рабочий xray ----------
+const (
+	probeTag  = "panel-probe"
+	probeFile = "07_panel_probe.json"
+)
+
+func probeInbound() []byte {
+	b, _ := json.MarshalIndent(map[string]any{"inbounds": []any{map[string]any{
+		"tag": probeTag, "listen": "127.0.0.1", "port": cfg.ProbePort, "protocol": "socks",
+		"settings": map[string]any{"udp": false},
+	}}}, "", "  ")
+	return b
+}
+
+// mainProbeReady — служебный вход уже применён (файл есть) и рабочий xray запущен.
+func mainProbeReady() bool {
+	dir, err := confDir()
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, probeFile)); err != nil {
+		return false
+	}
+	return xrayRunning()
+}
+
+// probeMain — задержка через рабочий xray XKeen (то есть ровно через то, что применено на роутере).
+func probeMain() *int {
+	return socksHTTPProbe(cfg.ProbePort, cfg.PingTimeout)
 }

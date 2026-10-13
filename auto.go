@@ -9,8 +9,10 @@ import (
 
 // подменяются в тестах
 var (
-	pingFn  = pingKeys
-	applyFn = applyToRouter
+	pingFn           = pingKeys
+	applyFn          = applyToRouter
+	probeMainFn      = probeMain
+	mainProbeReadyFn = mainProbeReady
 )
 
 // Результаты пинга — только в памяти (не изнашиваем флеш роутера).
@@ -69,6 +71,10 @@ func fastest(st *State, p map[string]*int, exclude map[string]bool) string {
 }
 
 // autoTick — одна проверка: держим «ваш» сервер; при отказе — самый быстрый; если никто не жив — напрямую.
+//
+// Экономия процессора роутера: активный сервер проверяется через рабочий xray XKeen (служебный
+// socks-вход panel-probe), без запуска временного xray. Временный xray (распаковка UPX ~35 МБ и
+// пара секунд CPU) нужен только для «вашего» сервера, пока работает резервный, и для поиска живых при отказе.
 func autoTick() {
 	store.mu.Lock()
 	if !store.st.AutoEnabled || !store.st.Enabled || len(store.st.Keys) == 0 {
@@ -85,42 +91,62 @@ func autoTick() {
 		mode = "preferred"
 	}
 	pref, act := snap.preferred(), snap.ActiveKey
-	full := mode == "direct" || float64(time.Now().Unix())-au.FullTS > cfg.AutoFullPing.Seconds()
-	var probe []Key
-	if full {
-		probe = snap.Keys
-	} else {
-		for _, id := range []string{pref, act} {
-			if k := snap.key(id); k != nil && (len(probe) == 0 || probe[0].ID != id) {
-				probe = append(probe, *k)
+	now := float64(time.Now().Unix())
+	p := map[string]*int{}
+
+	// 1) путь через роутер — рабочий xray (если служебный вход уже есть в конфиге)
+	viaMain := mode != "direct" && mainProbeReadyFn()
+	mainOK := false
+	if viaMain {
+		if v := probeMainFn(); v != nil {
+			mainOK, p[act] = true, v
+		}
+	}
+	// 2) временный xray — только для того, что через рабочий не проверить
+	full := mode == "direct" && now-au.FullTS >= cfg.AutoFullPing.Seconds()
+	var need []Key
+	add := func(id string) {
+		if k := snap.key(id); k != nil && p[id] == nil {
+			for _, n := range need {
+				if n.ID == id {
+					return
+				}
+			}
+			need = append(need, *k)
+		}
+	}
+	switch {
+	case full:
+		need = snap.Keys
+	default:
+		if pref != act || mode == "direct" {
+			add(pref)
+		}
+		if !mainOK && mode != "direct" {
+			add(act) // свежие параметры активного из подписки — живы?
+		}
+	}
+	if len(need) > 0 {
+		for k, v := range pingFn(need) {
+			if p[k] == nil {
+				p[k] = v
 			}
 		}
 	}
-	// подписки ротируют sid/sni: если на роутере применена старая ссылка, проверяем именно её
-	appliedDiffers := false
-	if k := snap.key(act); k != nil && snap.AppliedURL != "" && snap.AppliedURL != k.URL && mode != "direct" {
-		appliedDiffers = true
-		probe = append(probe, Key{ID: "__applied", URL: snap.AppliedURL})
-	}
-	p := pingFn(probe)
 	if full {
-		au.FullTS = float64(time.Now().Unix())
+		au.FullTS = now
 	}
-	prefOK, actOK := p[pref] != nil, p[act] != nil
-	refresh := false // применённые параметры устарели, свежие из подписки работают — переприменить тот же сервер
-	if appliedDiffers && p["__applied"] == nil && actOK {
-		refresh = true
-	}
-	delete(p, "__applied")
+
+	prefOK := p[pref] != nil
+	routerOK := mainOK || (!viaMain && p[act] != nil) // без служебного входа — как раньше, по временному
+	freshActOK := p[act] != nil
 	if prefOK {
 		au.PrefOK++
 	} else {
 		au.PrefOK = 0
 	}
-	target, stop := "", false
+	target, stop, refresh := "", false, false
 	switch {
-	case refresh:
-		target = act
 	case mode == "direct":
 		if prefOK {
 			target = pref
@@ -130,27 +156,27 @@ func autoTick() {
 	case mode == "fallback" && prefOK && au.PrefOK >= cfg.AutoRecover:
 		target = pref
 	default:
-		ok := actOK
-		if mode == "preferred" {
-			ok = prefOK
-		}
-		if ok {
+		if routerOK {
 			au.Fails = 0
 		} else {
 			au.Fails++
 		}
 		if au.Fails >= cfg.AutoFails {
-			if !full { // для выбора самого быстрого нужна полная картина
-				for k, v := range pingFn(snap.Keys) {
+			if viaMain && freshActOK {
+				// рабочий xray не проходит, а тот же сервер со свежими параметрами из подписки отвечает:
+				// подписка сменила sid/sni (или xray завис) — переприменить тот же сервер
+				target, refresh = act, true
+				break
+			}
+			for k, v := range pingFn(snap.Keys) { // полная картина, чтобы выбрать самый быстрый
+				if p[k] == nil {
 					p[k] = v
 				}
-				au.FullTS, full = float64(time.Now().Unix()), true
 			}
-			excl := map[string]bool{}
-			for _, id := range []string{pref, act} {
-				if p[id] == nil {
-					excl[id] = true
-				}
+			full = true
+			excl := map[string]bool{act: true}
+			if !prefOK {
+				excl[pref] = true
 			}
 			if target = fastest(&snap, p, excl); target == "" {
 				stop = true

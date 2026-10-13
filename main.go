@@ -57,7 +57,8 @@ type Config struct {
 	AutoIntervalS int    `json:"auto_interval_s"`
 	AutoFails     int    `json:"auto_fails"`
 	AutoRecover   int    `json:"auto_recover"`
-	AutoFullPingS int    `json:"auto_full_ping_s"`
+	AutoFullPingS int    `json:"auto_full_ping_s"` // в режиме «напрямую»: как часто искать живые серверы
+	ProbePort     int    `json:"probe_port"`       // служебный socks-вход в рабочем xray (127.0.0.1)
 
 	PingTimeout  time.Duration `json:"-"`
 	AutoInterval time.Duration `json:"-"`
@@ -75,7 +76,7 @@ func loadConfig(path string) error {
 		Xray: "/opt/sbin/xray", XrayConfDir: "auto", XrayAssetDir: "/opt/etc/xray/dat", TmpDir: "/tmp",
 		SubUserAgent: "v2rayN/7.0", PingHost: "www.gstatic.com", PingPath: "/generate_204",
 		PingTimeoutS: 6, PingBatch: 15, PingWorkers: 8, AutoIntervalS: 60, AutoFails: 2, AutoRecover: 3,
-		AutoFullPingS: 600}
+		AutoFullPingS: 180, ProbePort: 17890}
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -660,6 +661,7 @@ func main() {
 	mux.HandleFunc("GET /api/preview", auth(hPreview))
 	mux.HandleFunc("GET /api/export", hExport)
 
+	killStalePingXray()
 	go autoLoop()
 	go subLoop()
 

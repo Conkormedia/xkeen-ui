@@ -1,28 +1,33 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 var (
-	pingMu  sync.Mutex   // один временный xray за раз: памяти на роутере немного
+	// xrayMu — все запуски xray из панели строго по одному. Сжатый UPX xray при старте
+	// распаковывается в память (~35–40 МБ), и на роутере с 256 МБ третья копия рядом с рабочей
+	// и временной падает с Segmentation fault: проверка конфига «проваливается», а перезапуск
+	// XKeen может не поднять рабочий xray.
+	xrayMu  sync.Mutex
 	pingPID atomic.Int64 // pid временного xray — чтобы статус не путал его с рабочим
 )
 
 // pingKeys меряет реальную задержку через каждый сервер (HTTP через временный xray).
 // Результат: id -> мс, либо nil (не ответил).
 func pingKeys(keys []Key) map[string]*int {
-	pingMu.Lock()
-	defer pingMu.Unlock()
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
 	res := map[string]*int{}
 	for i := 0; i < len(keys); i += cfg.PingBatch {
 		end := min(i+cfg.PingBatch, len(keys))
@@ -69,6 +74,7 @@ func pingBatch(keys []Key) map[string]*int {
 		return res
 	}
 	cmd := exec.Command(cfg.Xray, "run", "-c", path)
+	childDiesWithParent(cmd)
 	if err := cmd.Start(); err != nil {
 		return res
 	}
@@ -106,20 +112,22 @@ func pingBatch(keys []Key) map[string]*int {
 	return res
 }
 
-// socksHTTPProbe — HTTP GET через локальный SOCKS5, время до первого ответа сервера.
+// socksHTTPProbe — задержка канала через сервер: два HTTP-запроса по одному соединению,
+// результат — время второго. Первый включает шифрованное рукопожатие (на слабом MIPS +~90 мс
+// и сильно растёт, когда замеры идут параллельно), второй — чистая задержка, которую видно в работе.
+// Не прошёл даже первый запрос — сервер мёртв (nil).
 func socksHTTPProbe(port int, timeout time.Duration) *int {
-	t0 := time.Now()
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), timeout)
 	if err != nil {
 		return nil
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(timeout))
-	buf := make([]byte, 64)
+	_ = c.SetDeadline(time.Now().Add(2 * timeout))
+	buf := make([]byte, 512)
 	if _, err := c.Write([]byte{5, 1, 0}); err != nil {
 		return nil
 	}
-	if n, err := c.Read(buf[:2]); err != nil || n != 2 || buf[0] != 5 || buf[1] != 0 {
+	if n, err := io.ReadFull(c, buf[:2]); err != nil || n != 2 || buf[0] != 5 || buf[1] != 0 {
 		return nil
 	}
 	host := cfg.PingHost
@@ -128,16 +136,47 @@ func socksHTTPProbe(port int, timeout time.Duration) *int {
 	if _, err := c.Write(req); err != nil {
 		return nil
 	}
-	if n, err := c.Read(buf[:10]); err != nil || n < 2 || buf[1] != 0 {
+	if _, err := io.ReadFull(c, buf[:10]); err != nil || buf[1] != 0 {
 		return nil
 	}
-	if _, err := fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", cfg.PingPath, host); err != nil {
-		return nil
+	get := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", cfg.PingPath, host)
+	var ms [2]int
+	for i := range 2 {
+		t0 := time.Now()
+		if _, err := io.WriteString(c, get); err != nil {
+			break
+		}
+		if !readHTTPHead(c, buf) {
+			break
+		}
+		ms[i] = int(time.Since(t0).Milliseconds())
+		if ms[i] == 0 {
+			ms[i] = 1
+		}
 	}
-	n, err := c.Read(buf)
-	if err != nil || !strings.HasPrefix(string(buf[:n]), "HTTP/") {
-		return nil
+	switch {
+	case ms[1] > 0:
+		return &ms[1]
+	case ms[0] > 0: // сервер закрыл соединение после первого ответа — берём первый
+		return &ms[0]
 	}
-	ms := int(time.Since(t0).Milliseconds())
-	return &ms
+	return nil
+}
+
+// readHTTPHead читает заголовки ответа (у generate_204 тела нет). true — пришёл ответ HTTP.
+func readHTTPHead(c net.Conn, buf []byte) bool {
+	var head []byte
+	for len(head) < 4096 {
+		n, err := c.Read(buf)
+		if n > 0 {
+			head = append(head, buf[:n]...)
+			if bytes.Contains(head, []byte("\r\n\r\n")) {
+				return bytes.HasPrefix(head, []byte("HTTP/"))
+			}
+		}
+		if err != nil {
+			return false
+		}
+	}
+	return false
 }
