@@ -234,6 +234,8 @@ func publicState(st *State) map[string]any {
 		"direct_ips": st.DirectIPs, "block_domains": st.BlockDomains,
 		"auto_enabled": st.AutoEnabled, "auto": st.Auto, "pings": p, "pings_at": nilIfEmpty(pa),
 		"last_apply": nilIfEmpty(st.LastApply), "last_log": st.LastLog, "version": version,
+		"refilter": refilterInfo(), "refilter_updated": nilIfEmpty(st.RefilterUpdated),
+		"refilter_error": nilIfEmpty(st.RefilterError),
 	}
 }
 
@@ -444,7 +446,7 @@ func hSettings(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if v, ok := d["mode"].(string); ok && (v == "split" || v == "all") {
+		if v, ok := d["mode"].(string); ok && (v == "split" || v == "blocked" || v == "all") {
 			st.Mode = v
 		}
 		if v, ok := d["active_key"].(string); ok && st.key(v) != nil {
@@ -495,6 +497,31 @@ func hPreview(w http.ResponseWriter, r *http.Request) {
 			return 400, map[string]any{"error": err.Error()}
 		}
 		return 200, map[string]any{"outbounds": ob, "routing": buildRouting(st)}
+	})
+}
+
+// hRefilterUpdate — скачать базу блокировок сейчас; если режим её использует — применить.
+func hRefilterUpdate(w http.ResponseWriter, r *http.Request) {
+	changed, err := updateRefilter()
+	withState(w, func(st *State) (int, any) {
+		if err != nil {
+			st.RefilterError = err.Error()
+			_ = store.save()
+			return 502, map[string]any{"error": err.Error()}
+		}
+		st.RefilterUpdated, st.RefilterError = nowStr(), ""
+		applied := false
+		if changed && st.Mode == "blocked" && st.Enabled && st.Auto.Mode != "direct" {
+			if out, err := applyToRouter(st, false); err != nil {
+				rollbackRefilter()
+				st.RefilterError = "новая база не прошла проверку xray, оставлена прежняя"
+				st.LastLog = tail(err.Error(), 4000)
+			} else {
+				st.LastApply, st.LastLog, applied = nowStr(), tail("Re:filter обновлён — применено\n"+out, 4000), true
+			}
+		}
+		_ = store.save()
+		return 200, map[string]any{"state": publicState(st), "changed": changed, "applied": applied}
 	})
 }
 
@@ -659,6 +686,7 @@ func main() {
 	mux.HandleFunc("POST /api/settings", auth(hSettings))
 	mux.HandleFunc("POST /api/apply", auth(hApply))
 	mux.HandleFunc("GET /api/preview", auth(hPreview))
+	mux.HandleFunc("POST /api/refilter/update", auth(hRefilterUpdate))
 	mux.HandleFunc("GET /api/export", hExport)
 
 	killStalePingXray()

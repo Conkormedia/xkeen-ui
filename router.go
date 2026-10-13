@@ -69,6 +69,10 @@ func buildRouting(st *State) map[string]any {
 		if l := clean(st.ProxyIPs); len(l) > 0 {
 			rules = append(rules, field("ip", l, "proxy"))
 		}
+		if st.Mode == "blocked" { // + всё, что заблокировано в РФ (Re:filter)
+			rules = append(rules, field("domain", []string{refilterRules.Domain}, "proxy"))
+			rules = append(rules, field("ip", []string{refilterRules.IP}, "proxy"))
+		}
 		rules = append(rules, field("network", "tcp,udp", "direct"))
 	}
 	return map[string]any{"routing": map[string]any{"domainStrategy": "IPIfNonMatch", "rules": rules}}
@@ -153,6 +157,9 @@ func applyToRouter(st *State, stop bool) (string, error) {
 	ob, err := buildOutbounds(st)
 	if err != nil {
 		return "", err
+	}
+	if st.Mode == "blocked" && !refilterPresent() {
+		return "", errors.New("база блокировок Re:filter не загружена — нажмите «Обновить базу»")
 	}
 	obB, _ := json.MarshalIndent(ob, "", "  ")
 	rtB, _ := json.MarshalIndent(buildRouting(st), "", "  ")

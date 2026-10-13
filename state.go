@@ -42,23 +42,25 @@ type Auto struct {
 
 // State — всё, что хранится на диске. Схема совместима с прежней панелью на Python.
 type State struct {
-	Keys          []Key    `json:"keys"`
-	ActiveKey     string   `json:"active_key"`
-	PreferredKey  string   `json:"preferred_key"`
-	Subs          []Sub    `json:"subs"`
-	Enabled       bool     `json:"enabled"`
-	Mode          string   `json:"mode"` // split | all
-	ProxyDomains  []string `json:"proxy_domains"`
-	ProxyIPs      []string `json:"proxy_ips"`
-	DirectDomains []string `json:"direct_domains"`
-	DirectIPs     []string `json:"direct_ips"`
-	BlockDomains  []string `json:"block_domains"`
-	BlockQUIC     bool     `json:"block_quic"`
-	AutoEnabled   bool     `json:"auto_enabled"`
-	Auto          Auto     `json:"auto"`
-	LastApply     string   `json:"last_apply"`
-	AppliedURL    string   `json:"applied_url,omitempty"` // ссылка, реально применённая на роутере
-	LastLog       string   `json:"last_log"`
+	Keys            []Key    `json:"keys"`
+	ActiveKey       string   `json:"active_key"`
+	PreferredKey    string   `json:"preferred_key"`
+	Subs            []Sub    `json:"subs"`
+	Enabled         bool     `json:"enabled"`
+	Mode            string   `json:"mode"` // split — только списки | blocked — списки + Re:filter | all — весь трафик
+	ProxyDomains    []string `json:"proxy_domains"`
+	ProxyIPs        []string `json:"proxy_ips"`
+	DirectDomains   []string `json:"direct_domains"`
+	DirectIPs       []string `json:"direct_ips"`
+	BlockDomains    []string `json:"block_domains"`
+	BlockQUIC       bool     `json:"block_quic"`
+	AutoEnabled     bool     `json:"auto_enabled"`
+	Auto            Auto     `json:"auto"`
+	LastApply       string   `json:"last_apply"`
+	AppliedURL      string   `json:"applied_url,omitempty"` // ссылка, реально применённая на роутере
+	RefilterUpdated string   `json:"refilter_updated,omitempty"`
+	RefilterError   string   `json:"refilter_error,omitempty"`
+	LastLog         string   `json:"last_log"`
 }
 
 func defaultState() State {

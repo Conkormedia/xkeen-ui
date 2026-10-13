@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,5 +169,28 @@ func TestAutoHealthyNoTempXray(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("временный xray запускался %d раз — должно быть 0", calls)
+	}
+}
+
+// Режим «Списки + блокировки РФ»: Re:filter — через VPN после пользовательских списков, перед финальным direct.
+func TestRoutingBlockedMode(t *testing.T) {
+	st := defaultState()
+	st.Mode = "blocked"
+	rules := buildRouting(&st)["routing"].(map[string]any)["rules"].([]any)
+	last := rules[len(rules)-1].(map[string]any)
+	if last["outboundTag"] != "direct" || last["network"] != "tcp,udp" {
+		t.Fatalf("последнее правило должно быть «остальное напрямую»: %v", last)
+	}
+	dom := rules[len(rules)-3].(map[string]any)
+	ip := rules[len(rules)-2].(map[string]any)
+	if dom["outboundTag"] != "proxy" || dom["domain"].([]string)[0] != "ext:geosite_refilter.dat:refilter" ||
+		ip["ip"].([]string)[0] != "ext:geoip_refilter.dat:refilter" {
+		t.Fatalf("нет правил Re:filter: %v / %v", dom, ip)
+	}
+	st.Mode = "split"
+	for _, r := range buildRouting(&st)["routing"].(map[string]any)["rules"].([]any) {
+		if fmt.Sprint(r) != "" && strings.Contains(fmt.Sprint(r), "refilter") {
+			t.Fatal("в режиме split Re:filter не нужен")
+		}
 	}
 }
