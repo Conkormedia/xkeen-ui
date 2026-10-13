@@ -235,6 +235,7 @@ func publicState(st *State) map[string]any {
 		"auto_enabled": st.AutoEnabled, "auto": st.Auto, "pings": p, "pings_at": nilIfEmpty(pa),
 		"last_apply": nilIfEmpty(st.LastApply), "last_log": st.LastLog, "version": version,
 		"refilter": refilterInfo(), "refilter_updated": nilIfEmpty(st.RefilterUpdated),
+		"pending":        pendingChanges(st),
 		"refilter_error": nilIfEmpty(st.RefilterError),
 	}
 }
@@ -471,8 +472,17 @@ func hSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func hApply(w http.ResponseWriter, r *http.Request) {
+	// Применение идёт 20–40 с (xray -test, перезапуск XKeen). Работаем с копией настроек, чтобы
+	// остальные запросы (статус, состояние, обновление страницы) не ждали всё это время.
+	store.mu.Lock()
+	snap := store.st
+	snap.Keys = append([]Key(nil), store.st.Keys...)
+	store.mu.Unlock()
+	out, err := applyToRouter(&snap, false)
 	withState(w, func(st *State) (int, any) {
-		out, err := applyToRouter(st, false)
+		if err == nil {
+			st.AppliedURL, st.AppliedSig = snap.AppliedURL, snap.AppliedSig
+		}
 		if err != nil {
 			st.LastLog = tail(out+"\n"+err.Error(), 4000)
 			_ = store.save()
@@ -670,6 +680,11 @@ func main() {
 	var err error
 	if store, err = openStore(cfg.StatePath); err != nil {
 		log.Fatal("state: ", err)
+	}
+	if store.st.AppliedSig == "" && store.st.LastApply != "" {
+		// переход со старой версии: считаем, что на роутере применено текущее
+		store.st.AppliedSig = configSig(&store.st)
+		_ = store.save()
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", hLogin)

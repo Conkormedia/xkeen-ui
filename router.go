@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -148,6 +150,9 @@ func applyToRouter(st *State, stop bool) (string, error) {
 	var log []string
 	if stop || !st.Enabled {
 		_, out := runCmd(120*time.Second, nil, cfg.XKeen, "-stop")
+		if !stop {
+			st.AppliedSig = configSig(st)
+		}
 		return "$ xkeen -stop\n" + out, nil
 	}
 	dir, err := confDir()
@@ -206,6 +211,7 @@ func applyToRouter(st *State, stop bool) (string, error) {
 		}
 	}
 	st.AppliedURL = st.key(st.ActiveKey).URL
+	st.AppliedSig = configSig(st)
 	return strings.Join(log, "\n"), nil
 }
 
@@ -290,4 +296,26 @@ func mainProbeReady() bool {
 // probeMain — задержка через рабочий xray XKeen (то есть ровно через то, что применено на роутере).
 func probeMain() *int {
 	return socksHTTPProbe(cfg.ProbePort, cfg.PingTimeout)
+}
+
+// configSig — отпечаток того, что уходит на роутер: вкл/выкл, сервер (без ротируемых sid/sni) и маршрутизация.
+func configSig(st *State) string {
+	if !st.Enabled {
+		return "off"
+	}
+	srv := ""
+	if k := st.key(st.ActiveKey); k != nil {
+		srv = coreSig(k.URL)
+	}
+	rt, _ := json.Marshal(buildRouting(st))
+	h := sha256.Sum256(append([]byte(srv+"|"), rt...))
+	return hex.EncodeToString(h[:8])
+}
+
+// pendingChanges — настройки в панели отличаются от применённых на роутере.
+func pendingChanges(st *State) bool {
+	if st.Auto.Mode == "direct" && st.Enabled { // автовыбор сам остановил XKeen — это не «изменения»
+		return false
+	}
+	return configSig(st) != st.AppliedSig
 }

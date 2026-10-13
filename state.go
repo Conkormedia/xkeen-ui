@@ -60,6 +60,7 @@ type State struct {
 	AppliedURL      string   `json:"applied_url,omitempty"` // ссылка, реально применённая на роутере
 	RefilterUpdated string   `json:"refilter_updated,omitempty"`
 	RefilterError   string   `json:"refilter_error,omitempty"`
+	AppliedSig      string   `json:"applied_sig,omitempty"` // отпечаток применённой конфигурации — для «есть изменения»
 	LastLog         string   `json:"last_log"`
 }
 
