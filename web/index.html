@@ -1,0 +1,166 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>XKeen Panel</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--line:#2c313c;--text:#e7e9ee;--mut:#8b93a3;--acc:#3b82f6;--ok:#22c55e;--bad:#ef4444}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text)}
+main{max-width:920px;margin:0 auto;padding:16px}h1{font-size:20px;margin:6px 0 16px;display:flex;justify-content:space-between;align-items:center}
+h2{font-size:15px;margin:0 0 12px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+input,textarea,select{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px;font:14px ui-monospace,monospace}
+textarea{min-height:140px;resize:vertical}
+button{background:var(--line);color:var(--text);border:0;border-radius:9px;padding:10px 14px;font-size:14px;cursor:pointer;white-space:nowrap}
+button.p{background:var(--acc);font-weight:600}button.d{background:transparent;color:var(--bad)}
+.big{font-size:16px;padding:14px 22px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--mut);margin-right:6px}
+.on .dot{background:var(--ok)}.off .dot{background:var(--bad)}
+.key{display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;gap:8px}
+.key.act{border-color:var(--acc)}.mut{color:var(--mut);font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}.seg button{border-radius:0;background:transparent}.seg button.sel{background:var(--acc)}
+.sw{position:relative;width:52px;height:30px;background:var(--line);border-radius:15px;cursor:pointer;flex:none}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:.2s}
+.sw.on{background:var(--ok)}.sw.on::after{left:25px}
+pre{white-space:pre-wrap;font-size:12px;color:var(--mut);max-height:240px;overflow:auto;margin:0}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#111;border:1px solid var(--line);padding:10px 16px;border-radius:10px;display:none}
+a{color:var(--mut)}
+#keys{max-height:62vh;overflow:auto}#keys .key{padding:8px 10px}
+.pg{font:13px ui-monospace,monospace;min-width:64px;text-align:right;color:var(--mut)}
+.pg.ok{color:var(--ok)}.pg.mid{color:#eab308}.pg.bad{color:var(--bad)}
+button:disabled{opacity:.6;cursor:wait}
+</style></head><body><main>
+<h1><span>XKeen Panel</span><a href="/logout" class="mut">выйти</a></h1>
+
+<div class="card"><div class="row" style="justify-content:space-between">
+ <div class="row"><div id="sw" class="sw" onclick="toggleVpn()"></div><div><b id="swl">VPN</b><div class="mut" id="st">проверяю роутер…</div></div></div>
+ <button class="p big" onclick="applyNow()">Применить на роутере</button>
+</div></div>
+
+<div class="card"><h2>Автовыбор сервера</h2>
+ <div class="row" style="justify-content:space-between">
+  <label class="row" style="width:auto"><input type="checkbox" id="au_on" style="width:auto" onchange="setAuto()"> включён</label>
+  <span class="mut" id="au_chk"></span></div>
+ <div id="au_st" style="margin:8px 0"></div>
+ <div class="mut" style="font-size:12px">Раз в минуту проверяется реальная задержка через ваш сервер. Не отвечает 2 проверки подряд — переключение на самый быстрый живой; ваш снова отвечает 3 проверки подряд — возврат на него; не отвечает ни один — XKeen останавливается и трафик идёт напрямую, пока серверы не оживут.</div>
+ <details style="margin-top:8px"><summary class="mut" style="cursor:pointer">журнал переключений</summary><pre id="au_log"></pre></details>
+</div>
+
+<div class="card"><h2>Серверы</h2>
+ <div class="row" style="margin-bottom:10px"><input id="nk" placeholder="https://… подписка  или  vless://… ключ" style="flex:1">
+ <button class="p" onclick="addKey()">Добавить</button></div>
+ <div id="subs"></div>
+ <details id="kl" ontoggle="saveKl()"><summary id="kl_sum" class="mut" style="cursor:pointer;padding:6px 0">Список серверов</summary>
+ <div class="row" style="margin:10px 0" id="tools">
+  <button class="p" id="pingbtn" onclick="pingAll()">Пинг всех</button>
+  <select id="sort" style="width:auto" onchange="savePrefs();render()"><option value="list">как в подписке</option><option value="ping">по пингу</option><option value="name">по названию</option></select>
+  <input id="flt" placeholder="фильтр: страна, город…" style="flex:1;min-width:140px" oninput="savePrefs();render()">
+  <span class="mut" id="pa"></span></div>
+ <div id="keys"></div></details></div>
+
+<div class="card"><h2>Маршрутизация</h2>
+ <div class="row" style="margin-bottom:12px"><div class="seg">
+  <button id="m-split" onclick="setMode('split')">Только списки через VPN</button>
+  <button id="m-all" onclick="setMode('all')">Весь трафик через VPN</button></div>
+  <label class="row mut"><input type="checkbox" id="quic" style="width:auto" onchange="save()"> блокировать QUIC (UDP/443)</label></div>
+ <div class="grid">
+  <div id="w-pd"><div class="mut">Через VPN — домены</div><textarea id="proxy_domains"></textarea></div>
+  <div id="w-pi"><div class="mut">Через VPN — IP/подсети</div><textarea id="proxy_ips"></textarea></div>
+  <div><div class="mut">Напрямую — домены</div><textarea id="direct_domains"></textarea></div>
+  <div><div class="mut">Напрямую — IP/подсети</div><textarea id="direct_ips"></textarea></div>
+  <div><div class="mut">Блокировать — домены</div><textarea id="block_domains"></textarea></div>
+  <div class="mut" style="font-size:12px;line-height:1.6">По одному на строку. Форматы Xray:<br>
+   <code>domain:example.com</code> — домен и поддомены<br><code>full:a.example.com</code> — точно<br>
+   <code>geosite:youtube</code> · <code>geoip:ru</code> — базы<br><code>regexp:…</code> · <code>1.2.3.0/24</code><br>Строки с # — комментарии.</div>
+ </div>
+ <div class="row" style="margin-top:12px"><button onclick="save(true)">Сохранить списки</button><span class="mut">Изменения попадут на роутер после «Применить».</span></div>
+</div>
+
+<div class="card"><h2>Журнал</h2><div class="mut" id="la"></div><pre id="log"></pre></div>
+</main><div class="toast" id="t"></div>
+<script>
+let S={};const L=['proxy_domains','proxy_ips','direct_domains','direct_ips','block_domains'];
+const $=id=>document.getElementById(id);
+function toast(m){const t=$('t');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',3500)}
+async function api(p,o={}){const r=await fetch(p,{headers:{'Content-Type':'application/json'},...o});
+ if(r.status==401){location='/login';return}const j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);return j}
+function render(){
+ renderSw();
+ $('m-split').classList.toggle('sel',S.mode=='split');$('m-all').classList.toggle('sel',S.mode=='all');
+ $('w-pd').style.opacity=$('w-pi').style.opacity=S.mode=='all'?.4:1;$('quic').checked=S.block_quic;
+ L.forEach(k=>{if(document.activeElement!==$(k))$(k).value=(S[k]||[]).join('\n')});
+ renderSubs(); renderKeys(); renderAuto();
+ $('la').textContent=S.last_apply?'Последнее применение: '+S.last_apply:'';$('log').textContent=S.last_log||'';
+}
+function gb(b){return (b/1073741824).toFixed(b>=1073741824*10?0:1)+' ГБ'}
+function uinfo(s){if(!s)return '';const o={};s.split(';').forEach(p=>{const[a,b]=p.trim().split('=');if(a)o[a]=+b});
+ let r=[];if(o.total)r.push('трафик '+gb((o.upload||0)+(o.download||0))+' из '+gb(o.total));
+ else if(o.upload!=null||o.download!=null)r.push('трафик '+gb((o.upload||0)+(o.download||0)));
+ if(o.expire)r.push('до '+new Date(o.expire*1000).toLocaleDateString('ru-RU'));return r.join(' · ')}
+function renderSubs(){$('subs').innerHTML=(S.subs||[]).map(s=>`<div class="key"><div><b>${esc(s.title||s.host)}</b>
+  <div class="mut">${s.count||0} серв. · обновлено ${esc(s.updated||'—')} · каждые ${s.interval_h} ч${s.userinfo?' · '+esc(uinfo(s.userinfo)):''}</div>
+  ${s.error?`<div class="mut" style="color:var(--bad)">${esc(s.error)}</div>`:''}</div>
+  <div class="row"><button onclick="refreshSub('${s.id}',this)">Обновить</button><button class="d" onclick="delSub('${s.id}')">Удалить</button></div></div>`).join('');
+ $('tools').style.display=S.keys.length?'flex':'none'}
+function pcls(p){return p==null?'bad':p<300?'ok':p<800?'mid':'bad'}
+function renderKlSum(){const act=S.keys.find(k=>k.id==S.active_key),P=S.pings||{};
+ $('kl').style.display=S.keys.length?'':'none';
+ $('kl_sum').innerHTML=`Список серверов (${S.keys.length})`+(act?` · активный: <b>${esc(act.name)}</b>${act.id in P?' · '+(P[act.id]==null?'—':P[act.id]+' мс'):''}`:'')}
+function saveKl(){try{localStorage.setItem('xk_kl',$('kl').open?'1':'0')}catch(e){}}
+function renderKeys(){renderKlSum();const P=S.pings||{},f=$('flt').value.trim().toLowerCase(),srt=$('sort').value;
+ let ks=S.keys.filter(k=>!f||(k.name+' '+k.host).toLowerCase().includes(f));
+ if(srt=='ping')ks=[...ks].sort((a,b)=>(P[a.id]??1e9)-(P[b.id]??1e9));
+ if(srt=='name')ks=[...ks].sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+ const act=S.keys.find(k=>k.id==S.active_key);
+ if(act&&!ks.includes(act))ks.unshift(act);
+ $('pa').textContent=S.pings_at?'пинг: '+S.pings_at:'';
+ $('keys').innerHTML=ks.length?ks.map(k=>{const p=P[k.id],has=k.id in P;return `<div class="key ${k.id==S.active_key?'act':''}">
+  <div style="min-width:0"><b>${esc(k.name)}</b><div class="mut">${esc(k.host)}:${k.port} · ${esc(k.net)}/${esc(k.sec)}${k.stale?' · пропал из подписки':''}${k.id==(S.preferred_key||S.active_key)?' · <b>ваш</b>':''}${k.id==S.active_key?' · <b style="color:var(--acc)">активный</b>':''}</div></div>
+  <div class="row" style="flex-wrap:nowrap"><span class="pg ${has?pcls(p):''}">${has?(p==null?'—':p+' мс'):''}</span>
+  ${k.id!=S.active_key?`<button onclick="useKey('${k.id}')">Выбрать</button>`:''}
+  ${k.sub?'':`<button class="d" onclick="delKey('${k.id}')">Удалить</button>`}</div></div>`}).join(''):'<div class="mut">Серверов пока нет — вставьте подписку или ключ</div>'}
+async function pingAll(){const b=$('pingbtn');b.disabled=true;b.textContent='Меряю…';
+ try{S=await api('/api/ping',{method:'POST',body:'{}'});render()}catch(e){toast('Пинг: '+e.message)}b.disabled=false;b.textContent='Пинг всех'}
+async function refreshSub(id,b){b.disabled=true;try{const r=await api('/api/subs/'+id+'/refresh',{method:'POST'});S=r.state;render();
+ toast(r.active_changed?'Обновлено. Активный сервер изменился — нажмите «Применить»':'Подписка обновлена')}catch(e){toast(e.message)}b.disabled=false}
+async function delSub(id){if(!confirm('Удалить подписку и все её серверы?'))return;S=await api('/api/subs/'+id,{method:'DELETE'});render()}
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+async function load(){S=await api('/api/state');render()}
+// Переключатель показывает РЕАЛЬНОЕ состояние роутера (R), а не настройку панели (S.enabled)
+let R=null;
+function renderSw(){const on=!!(R&&R.ok&&R.running);$('sw').classList.toggle('on',on);
+ $('swl').textContent=!R?'VPN — проверяю…':!R.ok?'Роутер недоступен':on?'VPN работает на роутере':'VPN выключен на роутере';
+ let h='';if(R&&R.ok){if(S.enabled&&!on&&S.auto_enabled&&(S.auto||{}).mode=='direct')h='все серверы недоступны — автовыбор пустил трафик напрямую';
+ else if(S.enabled&&!on)h=S.last_apply?'Панель ждёт включённый VPN, но Xray не запущен — смотрите журнал ниже':'Настройки ещё не применялись — выберите сервер и нажмите «Применить на роутере»';
+  else if(!S.enabled&&on)h='В панели VPN выключен, а на роутере работает — нажмите «Применить», чтобы остановить';}
+ $('st').textContent=(R?(R.ok?(R.xray||''):R.error):'')+(h?' — '+h:'')}
+async function status(){try{R=await api('/api/status')}catch(e){R={ok:false,error:e.message}}renderSw()}
+async function set(p){S=await api('/api/settings',{method:'POST',body:JSON.stringify(p)});render()}
+async function save(n){const p={block_quic:$('quic').checked};L.forEach(k=>p[k]=$(k).value.split('\n'));await set(p);if(n)toast('Сохранено')}
+async function setMode(m){await save();await set({mode:m})}
+async function useKey(id){await set({active_key:id});toast('Это ваш сервер — нажмите «Применить на роутере»')}
+function renderAuto(){const a=S.auto||{},pref=S.keys.find(k=>k.id==(S.preferred_key||S.active_key)),act=S.keys.find(k=>k.id==S.active_key);
+ $('au_on').checked=!!S.auto_enabled;$('au_chk').textContent=a.last_check?'проверка: '+a.last_check:'';
+ const m=a.mode||'preferred';let h;
+ if(!S.auto_enabled)h='<span class="mut">выключен — сервер меняется только вручную</span>';
+ else if(!S.enabled)h='<span class="mut">VPN выключен вручную — автовыбор не вмешивается</span>';
+ else if(m=='direct')h='<b style="color:var(--bad)">Напрямую</b> — ни один сервер не отвечает, XKeen остановлен. Включится сам, как только серверы оживут.';
+ else if(m=='fallback')h=`<b style="color:#eab308">Резервный сервер:</b> ${esc(act?act.name:'—')} · ваш (${esc(pref?pref.name:'—')}) не отвечает — вернусь на него, когда он ответит ${3} раза подряд`;
+ else h=`<b style="color:var(--ok)">Ваш сервер:</b> ${esc(pref?pref.name:'—')}`;
+ $('au_st').innerHTML=h;$('au_log').textContent=(a.events||[]).join('\n')||'переключений пока не было'}
+async function setAuto(){await set({auto_enabled:$('au_on').checked});toast($('au_on').checked?'Автовыбор включён':'Автовыбор выключен')}
+async function toggleVpn(){const on=!!(R&&R.running);
+ if(!on&&!S.active_key){toast('Сначала выберите сервер');return}
+ if(!confirm(on?'Остановить VPN на роутере?':'Запустить VPN на роутере с выбранным сервером?'))return;
+ await set({enabled:!on});await applyNow()}
+async function addKey(){try{S=await api('/api/keys',{method:'POST',body:JSON.stringify({url:$('nk').value})});$('nk').value='';render();toast('Ключ добавлен')}catch(e){toast(e.message)}}
+async function delKey(id){if(!confirm('Удалить ключ?'))return;S=await api('/api/keys/'+id,{method:'DELETE'});render()}
+async function applyNow(){await save();toast('Применяю…');try{const r=await api('/api/apply',{method:'POST'});S=r.state;render();toast('Готово')}
+ catch(e){toast('Ошибка: '+e.message.slice(0,120));load()}status();setTimeout(status,6000)}
+// сортировка и фильтр списка серверов запоминаются в этом браузере
+function savePrefs(){try{localStorage.setItem('xk_sort',$('sort').value);localStorage.setItem('xk_flt',$('flt').value)}catch(e){}}
+try{$('kl').open=localStorage.getItem('xk_kl')==='1'}catch(e){}
+try{const v=localStorage.getItem('xk_sort');if(v&&[...$('sort').options].some(o=>o.value==v))$('sort').value=v;
+ const f=localStorage.getItem('xk_flt');if(f)$('flt').value=f}catch(e){}
+load();status();setInterval(status,30000);
+setInterval(()=>{if(!document.activeElement||!['TEXTAREA','INPUT','SELECT'].includes(document.activeElement.tagName))load()},60000);
+</script></body></html>
