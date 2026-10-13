@@ -48,6 +48,7 @@ ask_secret() { printf '%s' "$1" >/dev/tty; stty -echo </dev/tty 2>/dev/null; IFS
 [ -d /opt/etc ] && command -v opkg >/dev/null || die "Не найден Entware (/opt). Сначала установите Entware — см. README."
 export PATH="/opt/sbin:/opt/bin:/opt/usr/sbin:/opt/usr/bin:$PATH"
 
+WAS_RUNNING=""
 ARCH=""
 for a in $(opkg print-architecture 2>/dev/null | awk '{print $2}'); do
   case "$a" in
@@ -134,6 +135,7 @@ if [ "$MODE" = "full" ]; then
   step "XKeen"
   if command -v xkeen >/dev/null 2>&1 && [ -d "$CONF_DIR" ]; then
     ok "XKeen уже установлен — только обновлю Xray и базы"
+    pidof xray >/dev/null 2>&1 && WAS_RUNNING=1
     xkeen -stop >/dev/null 2>&1
     [ -f /opt/sbin/xray ] && cp /opt/sbin/xray "/opt/sbin/xray.bak-xkeen-ui" 2>/dev/null
     cp "xray-$ARCH" /opt/sbin/xray && chmod 755 /opt/sbin/xray
@@ -177,6 +179,11 @@ EOF
   # лог Xray выключен: он пишет каждое соединение во флеш-память
   [ -f "$CONF_DIR/01_log.json" ] && sed -i 's/"loglevel": *"[a-z]*"/"loglevel": "none"/' "$CONF_DIR/01_log.json"
   ok "TProxy (порты 1181/1191), лог Xray выключен"
+
+  if [ -n "$WAS_RUNNING" ]; then
+    xkeen -start </dev/null >>"$LOG" 2>&1 && ok "XKeen снова запущен (через 20–30 с поднимется Xray)" \
+      || warn "XKeen не запустился — смотрите $LOG и нажмите «Применить» в панели"
+  fi
 
   step "Российские подсети мимо Xray (GeoIPSET)"
   if xkeen -gips </dev/null >>"$LOG" 2>&1; then ok "GeoIPSET установлен — RU-трафик не нагружает процессор"
