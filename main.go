@@ -415,7 +415,15 @@ func hPing(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	store.mu.Unlock()
-	mergePings(pingKeys(keys), len(want) == 0)
+	res := pingKeys(keys)
+	xrayMu.Lock()
+	perr := pingErr
+	xrayMu.Unlock()
+	if perr != "" {
+		writeJSON(w, 503, map[string]any{"error": perr})
+		return
+	}
+	mergePings(res, len(want) == 0)
 	withState(w, func(st *State) (int, any) { return 200, publicState(st) })
 }
 

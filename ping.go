@@ -23,16 +23,27 @@ var (
 	pingPID atomic.Int64 // pid временного xray — чтобы статус не путал его с рабочим
 )
 
+// pingErr — почему последний замер не состоялся (не хватило памяти, xray не стартовал).
+var pingErr string
+
 // pingKeys меряет реальную задержку через каждый сервер (HTTP через временный xray).
 // Результат: id -> мс, либо nil (не ответил).
 func pingKeys(keys []Key) map[string]*int {
 	xrayMu.Lock()
 	defer xrayMu.Unlock()
+	pingErr = ""
 	res := map[string]*int{}
+	if avail := memAvailableKB(); avail >= 0 && avail < 45000 {
+		pingErr = fmt.Sprintf("мало свободной памяти на роутере (%d МБ, нужно ~45): замер отложен", avail/1024)
+		return res
+	}
 	for i := 0; i < len(keys); i += cfg.PingBatch {
 		end := min(i+cfg.PingBatch, len(keys))
 		for id, v := range pingBatch(keys[i:end]) {
 			res[id] = v
+		}
+		if pingErr != "" { // не мучаем роутер остальными порциями
+			break
 		}
 	}
 	return res
@@ -79,19 +90,33 @@ func pingBatch(keys []Key) map[string]*int {
 		return res
 	}
 	pingPID.Store(int64(cmd.Process.Pid))
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 	defer func() {
 		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		<-exited
 		pingPID.Store(0)
 	}()
 	// ждём, пока поднимется последний вход (на MIPS + UPX старт занимает секунды)
 	last := fmt.Sprintf("127.0.0.1:%d", base+idx[len(idx)-1])
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+	up := false
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline) && !up; {
+		select {
+		case <-exited: // упал при старте — обычно нехватка памяти (распаковка UPX)
+			pingErr = "xray для замера не запустился — вероятно, мало свободной памяти на роутере"
+			return res
+		default:
+		}
 		if c, err := net.DialTimeout("tcp", last, 300*time.Millisecond); err == nil {
 			c.Close()
-			break
+			up = true
+		} else {
+			time.Sleep(300 * time.Millisecond)
 		}
-		time.Sleep(300 * time.Millisecond)
+	}
+	if !up {
+		pingErr = "xray для замера не успел запуститься за 20 с"
+		return res
 	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex

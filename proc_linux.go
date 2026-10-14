@@ -34,3 +34,21 @@ func killStalePingXray() {
 		_ = os.RemoveAll(o)
 	}
 }
+
+// memAvailableKB — MemAvailable из /proc/meminfo (сколько памяти реально можно занять).
+func memAvailableKB() int {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return -1
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "MemAvailable:") {
+			if f := strings.Fields(line); len(f) >= 2 {
+				if v, err := strconv.Atoi(f[1]); err == nil {
+					return v
+				}
+			}
+		}
+	}
+	return -1
+}

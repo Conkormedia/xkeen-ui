@@ -132,6 +132,9 @@ func autoTick() {
 				p[k] = v
 			}
 		}
+		if pingFailed() { // замер не состоялся (память) — это не отказ серверов, ждём следующую проверку
+			return
+		}
 	}
 	if full {
 		au.FullTS = now
@@ -172,6 +175,9 @@ func autoTick() {
 				if p[k] == nil {
 					p[k] = v
 				}
+			}
+			if pingFailed() { // замер не состоялся — не останавливать VPN по ложному «все мертвы»
+				return
 			}
 			full = true
 			excl := map[string]bool{act: true}
@@ -308,4 +314,11 @@ func subTick() {
 	if changed {
 		_ = store.save()
 	}
+}
+
+// pingFailed — последний замер не состоялся (в тестах pingFn подменён, pingErr пуст).
+func pingFailed() bool {
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
+	return pingErr != ""
 }
