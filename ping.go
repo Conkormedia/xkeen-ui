@@ -128,6 +128,9 @@ func pingBatch(keys []Key) map[string]*int {
 			defer wg.Done()
 			defer func() { <-sem }()
 			v := socksHTTPProbe(base+i, cfg.PingTimeout)
+			if v == nil { // серверы через CDN (Whitelist) отвечают через раз — вторая попытка
+				v = socksHTTPProbe(base+i, cfg.PingTimeout)
+			}
 			mu.Lock()
 			res[keys[i].ID] = v
 			mu.Unlock()

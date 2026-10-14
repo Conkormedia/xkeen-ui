@@ -9,6 +9,7 @@ import (
 
 // подменяются в тестах
 var (
+	refreshSubsFn    = refreshSubs
 	pingFn           = pingKeys
 	applyFn          = applyToRouter
 	probeMainFn      = probeMain
@@ -117,6 +118,11 @@ func autoTick() {
 	}
 	switch {
 	case full:
+		if now-lastSubRefresh(&snap) > 600 {
+			if keys, ok := refreshSubsFn(); ok {
+				snap.Keys = keys
+			}
+		}
 		need = snap.Keys
 	default:
 		if pref != act || mode == "direct" {
@@ -185,7 +191,17 @@ func autoTick() {
 				excl[pref] = true
 			}
 			if target = fastest(&snap, p, excl); target == "" {
-				stop = true
+				// никто не отвечает: сначала обновить подписку и перемерить, и только потом — напрямую
+				if t, p2, done := retryAfterRefresh(&snap, &au); done && t != "" {
+					target = t
+					for k, v := range p2 {
+						p[k] = v
+					}
+				} else if pingFailed() {
+					return
+				} else {
+					stop = true
+				}
 			}
 		}
 	}
@@ -321,4 +337,51 @@ func pingFailed() bool {
 	xrayMu.Lock()
 	defer xrayMu.Unlock()
 	return pingErr != ""
+}
+
+// refreshSubs — обновить все подписки сейчас (провайдер мог сменить адреса серверов).
+// Возвращает свежий список ключей; ok=false — обновить не удалось.
+func refreshSubs() ([]Key, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	st := &store.st
+	ok := false
+	for i := range st.Subs {
+		if _, err := syncSubscription(st, &st.Subs[i]); err != nil {
+			st.Subs[i].Error = err.Error()
+		} else {
+			ok = true
+		}
+	}
+	if len(st.Subs) > 0 {
+		_ = store.save()
+	}
+	return append([]Key(nil), st.Keys...), ok
+}
+
+// lastSubRefresh — когда последний раз обновлялась любая подписка (unix).
+func lastSubRefresh(st *State) float64 {
+	var t float64
+	for _, s := range st.Subs {
+		if s.UpdatedTS > t {
+			t = s.UpdatedTS
+		}
+	}
+	return t
+}
+
+// retryAfterRefresh — «никто не отвечает»: обновить подписки и перемерить все серверы.
+// Возвращает самый быстрый живой сервер (или "") и свежие замеры.
+func retryAfterRefresh(snap *State, au *Auto) (string, map[string]*int, bool) {
+	keys, ok := refreshSubsFn()
+	if !ok {
+		return "", nil, false
+	}
+	snap.Keys = keys
+	p := pingFn(keys)
+	if pingFailed() {
+		return "", nil, false
+	}
+	autoEvent(au, "серверы не отвечали — обновил подписку и перемерил")
+	return fastest(snap, p, nil), p, true
 }

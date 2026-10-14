@@ -194,3 +194,50 @@ func TestRoutingBlockedMode(t *testing.T) {
 		}
 	}
 }
+
+// Все мертвы → сначала обновить подписку и перемерить; живой после обновления — переключиться, а не «напрямую».
+func TestAutoRefreshBeforeDirect(t *testing.T) {
+	cfg = Config{AutoFails: 2, AutoRecover: 3}
+	store = &Store{path: filepath.Join(t.TempDir(), "state.json"), st: defaultState()}
+	store.st.Keys = []Key{{ID: "A", Name: "A", URL: "vless://u@a-old:443?security=reality&pbk=k#A"},
+		{ID: "B", Name: "B", URL: "vless://u@b-old:443?security=reality&pbk=k#B"}}
+	store.st.ActiveKey, store.st.PreferredKey, store.st.LastApply = "A", "A", "x"
+	store.st.AppliedURL = store.st.Keys[0].URL
+	refreshed := false
+	refreshSubsFn = func() ([]Key, bool) { // провайдер сменил адреса: B ожил на новом
+		refreshed = true
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		store.st.Keys[1].URL = "vless://u@b-new:443?security=reality&pbk=k#B"
+		return append([]Key(nil), store.st.Keys...), true
+	}
+	pingFn = func(keys []Key) map[string]*int {
+		r := map[string]*int{}
+		for _, k := range keys {
+			r[k.ID] = nil
+			if strings.Contains(k.URL, "b-new") {
+				v := 300
+				r[k.ID] = &v
+			}
+		}
+		return r
+	}
+	var applied []string
+	applyFn = func(st *State, stop bool) (string, error) {
+		if stop {
+			applied = append(applied, "STOP")
+		} else {
+			applied = append(applied, st.ActiveKey)
+		}
+		return "ok", nil
+	}
+	mainProbeReadyFn = func() bool { return true }
+	probeMainFn = func() *int { return nil }
+	autoTick()
+	autoTick()
+	if !refreshed || store.st.ActiveKey != "B" || strings.Join(applied, " ") != "B" {
+		t.Fatalf("ждали обновление подписки и переключение на B; refreshed=%v active=%s applied=%v",
+			refreshed, store.st.ActiveKey, applied)
+	}
+	refreshSubsFn = refreshSubs
+}
